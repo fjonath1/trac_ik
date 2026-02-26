@@ -37,7 +37,7 @@ struct fmt::formatter<Eigen::VectorXd, std::enable_if_t<true, char>> : ostream_f
 
 #define LOG_NAMED(name, format_str, ...) \
 { \
-        fmt::print("[{}]: " format_str, name, ##__VA_ARGS__); \
+        fmt::print("[{}]: " format_str "\n", name, ##__VA_ARGS__); \
 } \
 
 #define LOG_THROTTLED(dt, format_str, ...) \
@@ -46,7 +46,7 @@ struct fmt::formatter<Eigen::VectorXd, std::enable_if_t<true, char>> : ostream_f
     auto now = std::chrono::steady_clock::now(); \
     if (now - last_hit >= std::chrono::duration<float>(dt)) { \
         last_hit = now; \
-        fmt::print(format_str, ##__VA_ARGS__); \
+        fmt::print(format_str "\n", ##__VA_ARGS__); \
     } \
 } \
 

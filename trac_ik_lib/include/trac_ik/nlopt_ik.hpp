@@ -45,21 +45,17 @@ class NLOPT_IK
 {
   friend class TRAC_IK::TRAC_IK;
 public:
-  NLOPT_IK(const KDL::Chain& chain, const KDL::JntArray& q_min, const KDL::JntArray& q_max, double maxtime = 0.005, double eps = 1e-3, OptType type = SumSq);
+  NLOPT_IK(const KDL::Chain& chain, const KDL::JntArray& q_min, const KDL::JntArray& q_max, double eps = 1e-3, OptType type = SumSq);
 
   ~NLOPT_IK() {};
-  int CartToJnt(const KDL::JntArray& q_init, const KDL::Frame& p_in, KDL::JntArray& q_out, const KDL::Twist bounds = KDL::Twist::Zero(), const KDL::JntArray& q_desired = KDL::JntArray());
+  int CartToJnt(const KDL::JntArray& q_init, const KDL::Frame& p_in, KDL::JntArray& q_out,
+                double maxtime, const KDL::Twist bounds = KDL::Twist::Zero(), const KDL::JntArray& q_desired = KDL::JntArray());
 
   double minJoints(const std::vector<double>& x, std::vector<double>& grad);
   //  void cartFourPointError(const std::vector<double>& x, double error[]);
   void cartSumSquaredError(const std::vector<double>& x, double error[]);
   void cartDQError(const std::vector<double>& x, double error[]);
   void cartL2NormError(const std::vector<double>& x, double error[]);
-
-  inline void setMaxtime(double t)
-  {
-    maxtime = t;
-  }
 
 private:
 
@@ -83,7 +79,6 @@ private:
 
   KDL::ChainFkSolverPos_recursive fksolver;
 
-  double maxtime;
   double eps;
   int iter_counter;
   OptType TYPE;

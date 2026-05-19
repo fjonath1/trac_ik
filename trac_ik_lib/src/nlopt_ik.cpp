@@ -193,8 +193,9 @@ void constrainfuncm(uint m, double* result, uint n, const double* x, double* gra
 }
 
 
-NLOPT_IK::NLOPT_IK(const KDL::Chain& _chain, const KDL::JntArray& _q_min, const KDL::JntArray& _q_max, double _maxtime, double _eps, OptType _type):
-  chain(_chain), fksolver(_chain), maxtime(_maxtime), eps(std::abs(_eps)), TYPE(_type)
+NLOPT_IK::NLOPT_IK(const KDL::Chain& _chain, const KDL::JntArray& _q_min, const KDL::JntArray& _q_max,
+                   double _eps, OptType _type):
+  chain(_chain), fksolver(_chain), eps(std::abs(_eps)), TYPE(_type)
 {
   assert(chain.getNrOfJoints() == _q_min.data.size());
   assert(chain.getNrOfJoints() == _q_max.data.size());
@@ -442,7 +443,8 @@ void NLOPT_IK::cartDQError(const std::vector<double>& x, double error[])
 }
 
 
-int NLOPT_IK::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out, const KDL::Twist _bounds, const KDL::JntArray& q_desired)
+int NLOPT_IK::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out,
+                        double maxtime, const KDL::Twist _bounds, const KDL::JntArray& q_desired)
 {
   // User command to start an IK solve.  Takes in a seed
   // configuration, a Cartesian pose, and (optional) a desired

@@ -35,9 +35,9 @@ OF THE POSSIBILITY OF SUCH DAMAGE.
 
 namespace KDL
 {
-ChainIkSolverPos_TL::ChainIkSolverPos_TL(const Chain& _chain, const JntArray& _q_min, const JntArray& _q_max, double _maxtime, double _eps, bool _random_restart, bool _try_jl_wrap):
+ChainIkSolverPos_TL::ChainIkSolverPos_TL(const Chain& _chain, const JntArray& _q_min, const JntArray& _q_max, double _eps, bool _random_restart, bool _try_jl_wrap):
   chain(_chain), q_min(_q_min), q_max(_q_max), vik_solver(_chain), fksolver(_chain), delta_q(_chain.getNrOfJoints()),
-  maxtime(_maxtime), eps(_eps), rr(_random_restart), wrap(_try_jl_wrap)
+  eps(_eps), rr(_random_restart), wrap(_try_jl_wrap)
 {
 
   assert(chain.getNrOfJoints() == _q_min.data.size());
@@ -65,7 +65,8 @@ ChainIkSolverPos_TL::ChainIkSolverPos_TL(const Chain& _chain, const JntArray& _q
 
 
 
-int ChainIkSolverPos_TL::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out, const KDL::Twist _bounds)
+int ChainIkSolverPos_TL::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out,
+                                   double maxtime, const KDL::Twist _bounds)
 {
 
   if (aborted)

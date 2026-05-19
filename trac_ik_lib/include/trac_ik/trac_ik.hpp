@@ -36,7 +36,12 @@ OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <kdl/chainjnttojacsolver.hpp>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <future>
+
 #include <memory>
+#include <queue>
 #include <boost/date_time.hpp>
 
 namespace TRAC_IK
@@ -47,72 +52,42 @@ enum SolveType { Speed, Distance, Manip1, Manip2 };
 class TRAC_IK
 {
 public:
-  TRAC_IK(const KDL::Chain& _chain, const KDL::JntArray& _q_min, const KDL::JntArray& _q_max, double _maxtime = 0.005, double _eps = 1e-5, SolveType _type = Speed);
+  TRAC_IK(const KDL::Chain& _chain, const KDL::JntArray& _q_min, const KDL::JntArray& _q_max, double _eps = 1e-5,
+          SolveType _type = Speed);
 
-  TRAC_IK(const std::string& base_link, const std::string& tip_link, const std::string& URDF_param = "/robot_description", double _maxtime = 0.005, double _eps = 1e-5, SolveType _type = Speed);
+  TRAC_IK(const std::string& base_link, const std::string& tip_link, const std::string& URDF_param = "/robot_description",
+          double _eps = 1e-5, SolveType _type = Speed);
 
   ~TRAC_IK();
 
-  bool getKDLChain(KDL::Chain& chain_)
-  {
-    chain_ = chain;
-    return initialized;
-  }
+  bool getKDLChain(KDL::Chain& chain_);
 
-  bool getKDLLimits(KDL::JntArray& lb_, KDL::JntArray& ub_)
-  {
-    lb_ = lb;
-    ub_ = ub;
-    return initialized;
-  }
+  bool getKDLLimits(KDL::JntArray& lb_, KDL::JntArray& ub_);
 
   // Requires a previous call to CartToJnt()
-  bool getSolutions(std::vector<KDL::JntArray>& solutions_)
-  {
-    solutions_ = solutions;
-    return initialized && !solutions.empty();
-  }
+  bool getSolutions(std::vector<KDL::JntArray>& solutions_);
 
-  bool getSolutions(std::vector<KDL::JntArray>& solutions_, std::vector<std::pair<double, uint> >& errors_)
-  {
-    errors_ = errors;
-    return getSolutions(solutions);
-  }
+  bool getSolutions(std::vector<KDL::JntArray>& solutions_, std::vector<std::pair<double, uint> >& errors_);
 
-  bool setKDLLimits(KDL::JntArray& lb_, KDL::JntArray& ub_)
-  {
-    lb = lb_;
-    ub = ub_;
-    nl_solver.reset(new NLOPT_IK::NLOPT_IK(chain, lb, ub, maxtime, eps, NLOPT_IK::SumSq));
-    iksolver.reset(new KDL::ChainIkSolverPos_TL(chain, lb, ub, maxtime, eps, true, true));
-    return true;
-  }
+  bool setKDLLimits(KDL::JntArray& lb_, KDL::JntArray& ub_);
 
-  static double JointErr(const KDL::JntArray& arr1, const KDL::JntArray& arr2)
-  {
-    double err = 0;
-    for (uint i = 0; i < arr1.data.size(); i++)
-    {
-      err += pow(arr1(i) - arr2(i), 2);
-    }
+  static double JointErr(const KDL::JntArray& arr1, const KDL::JntArray& arr2);
 
-    return err;
-  }
+  int CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out, double maxtime = 0.005,
+                const KDL::Twist& bounds = KDL::Twist::Zero());
 
-  int CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out, const KDL::Twist& bounds = KDL::Twist::Zero());
-
-  inline void SetSolveType(SolveType _type)
+  void SetSolveType(SolveType _type)
   {
     solvetype = _type;
   }
 
 private:
+  void workerLoop();
   bool initialized;
   KDL::Chain chain;
   KDL::JntArray lb, ub;
   std::unique_ptr<KDL::ChainJntToJacSolver> jacsolver;
   double eps;
-  double maxtime;
   SolveType solvetype;
 
   std::unique_ptr<NLOPT_IK::NLOPT_IK> nl_solver;
@@ -123,10 +98,11 @@ private:
   template<typename T1, typename T2>
   bool runSolver(T1& solver, T2& other_solver,
                  const KDL::JntArray &q_init,
-                 const KDL::Frame &p_in);
+                 const KDL::Frame &p_in,
+                 double maxtime);
 
-  bool runKDL(const KDL::JntArray &q_init, const KDL::Frame &p_in);
-  bool runNLOPT(const KDL::JntArray &q_init, const KDL::Frame &p_in);
+  bool runKDL(const KDL::JntArray &q_init, const KDL::Frame &p_in, double maxtime);
+  bool runNLOPT(const KDL::JntArray &q_init, const KDL::Frame &p_in, double maxtime);
 
   void normalize_seed(const KDL::JntArray& seed, KDL::JntArray& solution);
   void normalize_limits(const KDL::JntArray& seed, KDL::JntArray& solution);
@@ -137,7 +113,14 @@ private:
   std::vector<KDL::JntArray> solutions;
   std::vector<std::pair<double, uint> >  errors;
 
-  std::thread task1, task2;
+  // Define thread pool to handle the tasks.
+  using SolverTask = std::packaged_task<void(const KDL::JntArray&, const KDL::Frame&, double)>;
+  std::mutex queue_mutex;
+  std::condition_variable cv_task;
+  std::atomic<bool> stop_threads;
+  std::queue<std::pair<SolverTask, std::tuple<const KDL::JntArray*, const KDL::Frame*, double>>> task_queue;
+  std::vector<std::thread> workers;
+
   KDL::Twist bounds;
 
   bool unique_solution(const KDL::JntArray& sol);
@@ -166,14 +149,14 @@ private:
 
 };
 
-inline bool TRAC_IK::runKDL(const KDL::JntArray &q_init, const KDL::Frame &p_in)
+inline bool TRAC_IK::runKDL(const KDL::JntArray &q_init, const KDL::Frame &p_in, double maxtime)
 {
-  return runSolver(*iksolver.get(), *nl_solver.get(), q_init, p_in);
+  return runSolver(*iksolver.get(), *nl_solver.get(), q_init, p_in, maxtime);
 }
 
-inline bool TRAC_IK::runNLOPT(const KDL::JntArray &q_init, const KDL::Frame &p_in)
+inline bool TRAC_IK::runNLOPT(const KDL::JntArray &q_init, const KDL::Frame &p_in, double maxtime)
 {
-  return runSolver(*nl_solver.get(), *iksolver.get(), q_init, p_in);
+  return runSolver(*nl_solver.get(), *iksolver.get(), q_init, p_in, maxtime);
 }
 
 }

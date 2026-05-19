@@ -40,10 +40,9 @@ OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace TRAC_IK
 {
 
-TRAC_IK::TRAC_IK(const std::string& base_link, const std::string& tip_link, const std::string& URDF_param, double _maxtime, double _eps, SolveType _type) :
+TRAC_IK::TRAC_IK(const std::string& base_link, const std::string& tip_link, const std::string& URDF_param, double _eps, SolveType _type) :
   initialized(false),
   eps(_eps),
-  maxtime(_maxtime),
   solvetype(_type)
 {
   urdf::Model robot_model;
@@ -114,13 +113,12 @@ TRAC_IK::TRAC_IK(const std::string& base_link, const std::string& tip_link, cons
 }
 
 
-TRAC_IK::TRAC_IK(const KDL::Chain& _chain, const KDL::JntArray& _q_min, const KDL::JntArray& _q_max, double _maxtime, double _eps, SolveType _type):
+TRAC_IK::TRAC_IK(const KDL::Chain& _chain, const KDL::JntArray& _q_min, const KDL::JntArray& _q_max, double _eps, SolveType _type):
   initialized(false),
   chain(_chain),
   lb(_q_min),
   ub(_q_max),
   eps(_eps),
-  maxtime(_maxtime),
   solvetype(_type)
 {
   initialize();
@@ -133,8 +131,8 @@ void TRAC_IK::initialize()
   assert(chain.getNrOfJoints() == ub.data.size());
 
   jacsolver.reset(new KDL::ChainJntToJacSolver(chain));
-  nl_solver.reset(new NLOPT_IK::NLOPT_IK(chain, lb, ub, maxtime, eps, NLOPT_IK::SumSq));
-  iksolver.reset(new KDL::ChainIkSolverPos_TL(chain, lb, ub, maxtime, eps, true, true));
+  nl_solver.reset(new NLOPT_IK::NLOPT_IK(chain, lb, ub, eps, NLOPT_IK::SumSq));
+  iksolver.reset(new KDL::ChainIkSolverPos_TL(chain, lb, ub, eps, true, true));
 
   for (uint i = 0; i < chain.segments.size(); i++)
   {
@@ -153,7 +151,87 @@ void TRAC_IK::initialize()
 
   assert(types.size() == lb.data.size());
 
+  // Create worker threads.
+  LOG_NAMED("trac_ik", "Creating worker threads.");
+  stop_threads = false;
+  for (int i = 0; i < 2; ++i) {
+    workers.emplace_back(&TRAC_IK::workerLoop, this);
+  }
+
   initialized = true;
+  LOG_NAMED("trac_ik", "Initialized");
+}
+
+void TRAC_IK::workerLoop() {
+  while (true) {
+    std::pair<SolverTask, std::tuple<const KDL::JntArray*, const KDL::Frame*, double>> task_wrapper;
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex);
+      cv_task.wait(lock, [this] { return !task_queue.empty() || stop_threads; });
+
+      if (stop_threads && task_queue.empty()) {
+        LOG_NAMED("trac_ik", "Stop thread detected.");
+        break;
+      }
+
+      task_wrapper = std::move(task_queue.front());
+      task_queue.pop();
+    }
+
+    // Unpack arguments and execute the task
+    auto& task = task_wrapper.first;
+    const KDL::JntArray* q_init_ptr = std::get<0>(task_wrapper.second);
+    const KDL::Frame* p_in_ptr = std::get<1>(task_wrapper.second);
+    double maxtime = std::get<2>(task_wrapper.second);
+
+    task(*q_init_ptr, *p_in_ptr, maxtime);
+  }
+  LOG_NAMED("trac_ik", "Exiting worker loop.");
+}
+
+bool TRAC_IK::getKDLChain(KDL::Chain& chain_)
+{
+  chain_ = chain;
+  return initialized;
+}
+
+bool TRAC_IK::getKDLLimits(KDL::JntArray& lb_, KDL::JntArray& ub_)
+{
+  lb_ = lb;
+  ub_ = ub;
+  return initialized;
+}
+
+bool TRAC_IK::getSolutions(std::vector<KDL::JntArray>& solutions_)
+{
+  solutions_ = solutions;
+  return initialized && !solutions.empty();
+}
+
+bool TRAC_IK::getSolutions(std::vector<KDL::JntArray>& solutions_, std::vector<std::pair<double, uint> >& errors_)
+{
+  errors_ = errors;
+  return getSolutions(solutions);
+}
+
+bool TRAC_IK::setKDLLimits(KDL::JntArray& lb_, KDL::JntArray& ub_)
+{
+  lb = lb_;
+  ub = ub_;
+  nl_solver.reset(new NLOPT_IK::NLOPT_IK(chain, lb, ub, eps, NLOPT_IK::SumSq));
+  iksolver.reset(new KDL::ChainIkSolverPos_TL(chain, lb, ub, eps, true, true));
+  return true;
+}
+
+double TRAC_IK::JointErr(const KDL::JntArray& arr1, const KDL::JntArray& arr2)
+{
+  double err = 0;
+  for (uint i = 0; i < arr1.data.size(); i++)
+  {
+    err += pow(arr1(i) - arr2(i), 2);
+  }
+
+  return err;
 }
 
 bool TRAC_IK::unique_solution(const KDL::JntArray& sol)
@@ -210,7 +288,8 @@ inline void normalizeAngle(double& val, const double& target)
 template<typename T1, typename T2>
 bool TRAC_IK::runSolver(T1& solver, T2& other_solver,
                         const KDL::JntArray &q_init,
-                        const KDL::Frame &p_in)
+                        const KDL::Frame &p_in,
+                        double maxtime)
 {
   KDL::JntArray q_out;
 
@@ -228,9 +307,7 @@ bool TRAC_IK::runSolver(T1& solver, T2& other_solver,
     if (time_left <= 0)
       break;
 
-    solver.setMaxtime(time_left);
-
-    int RC = solver.CartToJnt(seed, p_in, q_out, bounds);
+    int RC = solver.CartToJnt(seed, p_in, q_out, time_left, bounds);
     if (RC >= 0)
     {
       switch (solvetype)
@@ -281,8 +358,6 @@ bool TRAC_IK::runSolver(T1& solver, T2& other_solver,
         seed(j) = fRand(lb(j), ub(j));
   }
   other_solver.abort();
-
-  solver.setMaxtime(fulltime);
 
   return true;
 }
@@ -395,7 +470,8 @@ double TRAC_IK::ManipValue2(const KDL::JntArray& arr)
   return singular_values.minCoeff() / singular_values.maxCoeff();
 }
 
-int TRAC_IK::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out, const KDL::Twist& _bounds)
+int TRAC_IK::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL::JntArray &q_out, double maxtime,
+                       const KDL::Twist& _bounds)
 {
 
   if (!initialized)
@@ -414,13 +490,30 @@ int TRAC_IK::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL:
   errors.clear();
 
   bounds = _bounds;
+  // 1. Wrap your member functions into packaged_tasks matching the signature
+  SolverTask task1(std::bind(&TRAC_IK::runKDL, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+  SolverTask task2(std::bind(&TRAC_IK::runNLOPT, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
-  task1 = std::thread(&TRAC_IK::runKDL, this, q_init, p_in);
-  task2 = std::thread(&TRAC_IK::runNLOPT, this, q_init, p_in);
+  // 2. Get futures out of the packaged_tasks to track completion
+  std::future<void> fut1 = task1.get_future();
+  std::future<void> fut2 = task2.get_future();
 
-  task1.join();
-  task2.join();
+  // 3. Push both tasks into the queue safely using pointers to avoid copying KDL data
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    task_queue.emplace(std::move(task1), std::make_tuple(&q_init, &p_in, maxtime));
+    task_queue.emplace(std::move(task2), std::make_tuple(&q_init, &p_in, maxtime));
+  }
 
+  // Wake up both background workers
+  cv_task.notify_all();
+
+  // 4. Wait for both solvers to complete.
+  // fut.get() blocks until the worker thread invokes task()
+  fut1.get();
+  fut2.get();
+
+  // Process outputs into q_out and return status code...
   if (solutions.empty())
   {
     q_out = q_init;
@@ -446,9 +539,12 @@ int TRAC_IK::CartToJnt(const KDL::JntArray &q_init, const KDL::Frame &p_in, KDL:
 
 TRAC_IK::~TRAC_IK()
 {
-  if (task1.joinable())
-    task1.join();
-  if (task2.joinable())
-    task2.join();
+  stop_threads = true;
+  cv_task.notify_all();
+  for (std::thread &worker : workers) {
+    if (worker.joinable()) {
+      worker.join();
+    }
+  }
 }
 }
